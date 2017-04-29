@@ -1,9 +1,9 @@
 """Collect entries from arXiv: title, authors, summary ...
 """
-import numpy as np
-import urllib.request
+from six.moves.urllib.request import urlopen
 import xml.dom.minidom
 import time
+import numpy as np
 
 
 def getNodeValue(node, tag):
@@ -14,18 +14,18 @@ def getNodeValue(node, tag):
 
 
 # search parameters
-nb_queries = 100
-batch_size = 10000  # maximum allowed number of results
+nb_queries = 200
+batch_size = 5000  # number of results per query, max = 10000
 query = 'http://export.arxiv.org/api/query?'
 query += 'search_query=all'  # all:astrophysics
 query += '&start=%i'
 query += '&max_results=%i' % batch_size
-
+save_path = 'batch_%i.npz'
 
 for i in range(nb_queries):
     print(i)
-    url = urllib.request.urlopen(query % (i * batch_size))
-    dom = xml.dom.minidom.parseString(url.read())
+
+    dom = xml.dom.minidom.parseString(urlopen(query % (i * batch_size)).read())
 
     ids = []
     times = []
@@ -58,7 +58,7 @@ for i in range(nb_queries):
 
     time.sleep(3)  # play nice with the arXiv API
 
-    np.savez('batch_%i.npz' % i,
+    np.savez(save_path % i,
              ids=ids,
              times=times,
              titles=titles,
