@@ -1,94 +1,112 @@
 """Collect entries from arXiv: title, abstract, authors ...
+
+Example queries, see https://arxiv.org/help/api/index
+    all:electron
+    cat:astro-ph
+    cat:astro-ph.HE
+
+Entries as of may 2017
+(0 entries means that sub-categories have to be queried instead, eg. "cs.CV")
+    astro-ph 105380
+    cond-mat 14215
+    hep-ex 33529
+    hep-lat 20428
+    hep-ph 129308
+    hep-th 116546
+    math-ph 49450
+    quant-ph 79667
+    nucl-ex 16329
+    nucl-th 39794
+    physics 0
+    qr-qc 0
+    nlin 0
+    math 0
+    cs 0
+    q-bio 1356
+    q-fin 0
+    stat 0
 """
 from __future__ import print_function
 from six.moves.urllib.request import urlopen
-import xml.dom.minidom
+import feedparser
 import time
 import numpy
 
 
-max_summary = 2000  # maximum length of summary string
-max_authors = 500  # maximum length of authors string
+BASE_URL = 'http://export.arxiv.org/api/query?search_query='
 
 
-def data_dict():
-    keys = ['id', 'title', 'summary', 'time', 'comment', 'category', 'authors']
-    return {k: [] for k in keys}
+def retrieve_number_of_entries(query):
+    url = BASE_URL + query + '&max_results=1'
+    feed = feedparser.parse(urlopen(url).read())
+    return int(feed.feed.opensearch_totalresults)
 
 
-def retrieve(query, query_size=1000):
-    dom = xml.dom.minidom.parseString(urlopen(query).read())
-    entries = dom.getElementsByTagName('entry')
-    if len(entries) == query_size:
-        return entries
-    else:
-        print('  incomplete', len(entries))
-        print('  retry', query)
+def retrieve(query, max_results=1000, start=0, nb_retry=10):
+    """ Query arXiv entries and retry if incomplete """
+    url = BASE_URL + query + '&start=%i&max_results=%i' % (start, max_results)
+    for i in range(nb_retry):
+        feed = feedparser.parse(urlopen(url).read())
+        nb_results = len(feed.entries)
+        if nb_results == max_results:
+            return feed
+        print('Incomplete %i/%i, retrying in 5s' % (nb_results, max_results))
         time.sleep(5)
-        return retrieve(query, query_size)
 
 
-def parse_value(node, tag):
-    try:
-        return node.getElementsByTagName(tag)[0].firstChild.nodeValue
-    except IndexError:
-        return ''
+def shorten(x, length):
+    """ Shorten string x to length, adding '..' if shortened """
+    if len(x) > (length):
+        return x[:length - 2] + '..'
+    return x
 
 
-def parse_entries(entries, data):
+def parse_entries(entries, data, max_authors=500, max_summary=2000):
     for entry in entries:
         # arXiv ID
-        x = parse_value(entry, 'id').strip('http://arxiv.org/abs/')
-        data['id'].append(x)
+        data['id'].append(entry['id'].strip('http://arxiv.org/abs/'))
         # title
-        x = parse_value(entry, 'title').replace('\n ', '')
-        data['title'].append(x)
-        # abstract
-        x = parse_value(entry, 'summary').strip().replace('\n', ' ')
-        x = (x[:max_summary] + '..') if len(x) > (max_summary + 2) else x
-        data['summary'].append(x)
-        # submission date
-        x = parse_value(entry, 'published')
-        data['time'].append(x)
-        # comment
-        x = parse_value(entry, 'arxiv:comment').replace('\n ', '')
-        data['comment'].append(x)
+        data['title'].append(entry['title'].replace('\n ', ''))
+        # publication date
+        data['time'].append(entry['published'])
         # category
-        x = entry.getElementsByTagName('category')[0].getAttribute('term')
-        data['category'].append(x)
+        data['category'].append(entry['category'])
         # authors
-        x = ', '.join([n.firstChild.nodeValue for n in entry.getElementsByTagName('name')])
-        x = (x[:max_authors] + '..') if len(x) > (max_authors + 2) else x
+        x = ', '.join([a['name'] for a in entry['authors']])
+        x = shorten(x, max_authors)
         data['authors'].append(x)
+        # abstract
+        x = entry['summary'].strip().replace('\n', ' ')
+        x = shorten(x, max_summary)
+        data['summary'].append(x)
     return data
 
 
 if __name__ == '__main__':
     # search parameters
-    nb_files = 10  # number of batches to create
-    nb_queries = 100  # number of queries per file
+    query = 'cat:astro-ph'  # all:astrophysics, etc
+    save_path = 'astroph_batch_%i.npz'
+
+    ntot = retrieve_number_of_entries(query)
+    print('Query: %s, Entries: %i' % (query, ntot))
+
+    file_size = 10000  # number of entries per file
     query_size = 1000  # number of entries per query, max = 10000
-    query_type = 'all'  # all:astrophysics, etc
-    save_path = 'batch_%i.npz'
 
-    # query, see https://arxiv.org/help/api/index
-    query = 'http://export.arxiv.org/api/query?'
-    query += 'search_query=%s' % query_type
-    query += '&start=%i'
-    query += '&max_results=%i' % query_size
-
-    data = data_dict()
+    nb_files = ntot // file_size
+    nb_queries = file_size // query_size
 
     for i in range(nb_files):
         print('file', i)
+        data = {k: [] for k in ['id', 'title', 'summary', 'time', 'category', 'authors']}
 
         # collect a number of queries
         for j in range(nb_queries):
             print('  query', j)
-            start = (i * nb_queries + j) * query_size  # start index for query
-            entries = retrieve(query % start, query_size)
-            parse_entries(entries, data)
-            time.sleep(3)  # play nice with the arXiv API
+            start = (i * nb_queries + j) * query_size
+            feed = retrieve(query, query_size, start)
+            data = parse_entries(feed.entries, data)
+            time.sleep(3)
 
         # save batch
         print('saving')
@@ -100,5 +118,3 @@ if __name__ == '__main__':
                 summary=data['summary'],
                 comment=data['comment'],
                 category=data['category'])
-
-        data = data_dict()
